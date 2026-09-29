@@ -1,3 +1,4 @@
+```js
 import dotenv from "dotenv";
 dotenv.config();
 
@@ -16,7 +17,17 @@ try {
   process.exit(1);
 }
 
-const [{ default: app }, { default: db, ensureConnectionWithRetry }, { default: redis }, , , { default: HousekeepingService }, { default: SocketService }, { initApollo }, { tokenPriceRefresh, ngnRateRefresh }] = await Promise.all([
+const [
+  { default: app },
+  { default: db, ensureConnectionWithRetry },
+  { default: redis },
+  ,
+  { shutdownWorkers },
+  { default: HousekeepingService },
+  { default: SocketService },
+  { initApollo },
+  { tokenPriceRefresh, ngnRateRefresh },
+] = await Promise.all([
   import("./app.js"),
   import("./config/database.js"),
   import("./config/redis.js"),
@@ -71,7 +82,6 @@ const isProduction = process.env.NODE_ENV === "production";
       } else {
         console.log("No new migrations to run");
       }
-
     } catch (err) {
       console.error("Database migrations failed:", err.message);
 
@@ -105,13 +115,19 @@ const isProduction = process.env.NODE_ENV === "production";
   // Track background timers for clean shutdown
   const activeTimers = [];
 
-  const SHUTDOWN_DEADLINE_MS = parseInt(process.env.SHUTDOWN_DEADLINE_MS || "15000", 10);
+  const SHUTDOWN_DEADLINE_MS = parseInt(
+    process.env.SHUTDOWN_DEADLINE_MS || "15000",
+    10
+  );
   let shuttingDown = false;
 
   const shutdown = async (signal) => {
     if (shuttingDown) return;
     shuttingDown = true;
-    console.log(`${signal} received — starting graceful shutdown (deadline: ${SHUTDOWN_DEADLINE_MS}ms)`);
+
+    console.log(
+      `${signal} received — starting graceful shutdown (deadline: ${SHUTDOWN_DEADLINE_MS}ms)`
+    );
 
     // Hard deadline: force exit if graceful shutdown takes too long
     const deadline = setTimeout(() => {
@@ -135,31 +151,38 @@ const isProduction = process.env.NODE_ENV === "production";
       stellarStreamService.stop();
       console.log("  [3/6] Stellar streams stopped");
 
-      // 4. Close BullMQ workers (stop processing new jobs, let in-flight finish)
-      // Workers are imported as side-effects in workers.js; they self-register
-      // and will be garbage-collected. For a clean close we pause them.
-      console.log("  [4/6] BullMQ workers draining");
+      // 4. Stop worker intake, drain active jobs, and close queues
+      await shutdownWorkers(Math.max(1000, SHUTDOWN_DEADLINE_MS - 1000));
+      console.log("  [4/6] BullMQ workers drained and queues closed");
 
       // 5. Close Redis connections
       try {
         if (redis.isOpen) await redis.quit();
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
       console.log("  [5/6] Redis closed");
 
       // 6. Destroy database pool
       try {
         await db.destroy();
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
       console.log("  [6/6] Database pool destroyed");
 
       // Clear background timers (audit cleanup, export cleanup, USSD)
       for (const id of activeTimers) clearInterval(id);
       tokenPriceRefresh.stop();
       ngnRateRefresh.stop();
+
+      clearTimeout(deadline);
+
       console.log("  Graceful shutdown complete");
 
       process.exit(0);
     } catch (err) {
+      clearTimeout(deadline);
       console.error("Error during graceful shutdown:", err);
       process.exit(1);
     }
@@ -171,8 +194,13 @@ const isProduction = process.env.NODE_ENV === "production";
   // Validate deployments before listening. In production, fail startup on missing deployments.
   try {
     const deployResult = await validateStartup({ failOnMissing: isProduction });
+
     if (!deployResult.ok) {
-      console.warn("One or more deployments are missing or mismatched:", deployResult.missing.map((m) => m.chain));
+      console.warn(
+        "One or more deployments are missing or mismatched:",
+        deployResult.missing.map((m) => m.chain)
+      );
+
       if (isProduction) {
         console.error("Exiting: missing deployments in production environment");
         process.exit(1);
@@ -180,6 +208,7 @@ const isProduction = process.env.NODE_ENV === "production";
     }
   } catch (err) {
     console.error("Deployment validation failed:", err.message);
+
     if (isProduction) process.exit(1);
   }
 
@@ -187,42 +216,51 @@ const isProduction = process.env.NODE_ENV === "production";
     console.log(`Server running on port ${PORT} (with WebSockets)`);
     console.log(`Bull Board: http://localhost:${PORT}/admin/running-queues`);
 
-    const retentionDays = parseInt(process.env.AUDIT_LOG_RETENTION_DAYS) || 90;
+    const retentionDays =
+      parseInt(process.env.AUDIT_LOG_RETENTION_DAYS) || 90;
 
     // Housekeeping jobs run on every replica's timer, but HousekeepingService
     // wraps each run in a distributed lease (see backend/services/
     // HousekeepingService.js) so only one replica actually executes the work
     // per tick; the rest observe the lease held and skip. See
     // backend/docs/housekeeping-jobs.md for details.
-    activeTimers.push(setInterval(async () => {
-      try {
-        await HousekeepingService.runAuditLogCleanup(retentionDays);
-      } catch (err) {
-        console.error("Audit log cleanup failed:", err.message);
-      }
-    }, TWENTY_FOUR_HOURS));
+    activeTimers.push(
+      setInterval(async () => {
+        try {
+          await HousekeepingService.runAuditLogCleanup(retentionDays);
+        } catch (err) {
+          console.error("Audit log cleanup failed:", err.message);
+        }
+      }, TWENTY_FOUR_HOURS)
+    );
 
-    console.log(`Audit log retention: ${retentionDays} days (cleanup every 24h)`);
+    console.log(
+      `Audit log retention: ${retentionDays} days (cleanup every 24h)`
+    );
 
     // Self-scheduling: the next refresh starts only after the previous one
     // settles, so slow upstream calls never overlap (see config/initials.js).
     tokenPriceRefresh.start();
     ngnRateRefresh.start();
 
-    activeTimers.push(setInterval(async () => {
-      try {
-        await HousekeepingService.runExportCleanup();
-      } catch (err) {
-        console.error("Export cleanup failed:", err.message);
-      }
-    }, TWENTY_FOUR_HOURS));
+    activeTimers.push(
+      setInterval(async () => {
+        try {
+          await HousekeepingService.runExportCleanup();
+        } catch (err) {
+          console.error("Export cleanup failed:", err.message);
+        }
+      }, TWENTY_FOUR_HOURS)
+    );
 
-    activeTimers.push(setInterval(async () => {
-      try {
-        await HousekeepingService.runBillPaymentReconciliation();
-      } catch (err) {
-        console.error("Bill payment reconciliation failed:", err.message);
-      }
-    }, FIVE_MINUTES));
+    activeTimers.push(
+      setInterval(async () => {
+        try {
+          await HousekeepingService.runBillPaymentReconciliation();
+        } catch (err) {
+          console.error("Bill payment reconciliation failed:", err.message);
+        }
+      }, FIVE_MINUTES)
+    );
   });
 })();
