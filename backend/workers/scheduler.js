@@ -1,3 +1,4 @@
+```js
 import os from "os";
 import { randomUUID } from "crypto";
 import { Worker, Queue } from "bullmq";
@@ -15,12 +16,12 @@ import attachRedisErrorAlert from "../utils/bullmqAlerts.js";
 
 // ========== Queues ==========
 
-const schedulerQueue = redisConnection
+export const schedulerQueue = redisConnection
     ? new Queue("scheduled-payment-executor", { connection: redisConnection })
     : null;
 attachRedisErrorAlert(schedulerQueue, "scheduled-payment-executor-queue");
 
-const notifierQueue = redisConnection
+export const notifierQueue = redisConnection
     ? new Queue("scheduled-payment-notifier", { connection: redisConnection })
     : null;
 attachRedisErrorAlert(notifierQueue, "scheduled-payment-notifier-queue");
@@ -157,7 +158,7 @@ export const executionWorker = redisConnection
         },
         {
             connection: redisConnection,
-            concurrency: 1, // Process one batch at a time
+            concurrency: 1,
         }
     )
     : null;
@@ -228,12 +229,11 @@ attachRedisErrorAlert(notificationWorker, "scheduled-payment-notifier-worker");
 
 async function registerRepeatableJobs() {
     if (schedulerQueue) {
-        // Execute due payments every 60 seconds
         await schedulerQueue.add(
             "execute-due-payments",
             {},
             {
-                repeat: { every: 60_000 }, // every 60 seconds
+                repeat: { every: 60_000 },
                 removeOnComplete: 50,
                 removeOnFail: false,
             }
@@ -242,12 +242,11 @@ async function registerRepeatableJobs() {
     }
 
     if (notifierQueue) {
-        // Check for upcoming payments every 5 minutes
         await notifierQueue.add(
             "notify-upcoming-payments",
             {},
             {
-                repeat: { every: 5 * 60_000 }, // every 5 minutes
+                repeat: { every: 5 * 60_000 },
                 removeOnComplete: 50,
                 removeOnFail: false,
             }
@@ -256,12 +255,11 @@ async function registerRepeatableJobs() {
     }
 
     if (apiKeyRotationQueue) {
-        // Check for API key rotations every hour
         await apiKeyRotationQueue.add(
             "check-api-key-rotations",
             {},
             {
-                repeat: { every: 60 * 60_000 }, // every 1 hour
+                repeat: { every: 60 * 60_000 },
                 removeOnComplete: 50,
                 removeOnFail: false,
             }
